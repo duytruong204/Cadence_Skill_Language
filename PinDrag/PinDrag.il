@@ -42,7 +42,7 @@ procedure(ExtractPin(@optional
                     (MoveMatrix list())
                     (RotationMatrix list()) ; Y-coordinate offset use for mosaic case (default: 0)
                     (cv_main geGetEditCellView(getCurrentWindow()))) ; Main cellview
-    let((cv x1 y1 FoundLabel LabelMatrix listOrient listMove i cnt) ; Local variables
+    let((cv x y x0 y0 x1 y1 FoundLabel LabelMatrix orient) ; Local variables
         ; If working with an instance
         if(inst then
             printf("Read instance [%s]\n" inst~>cellName) ; Print instance name
@@ -59,10 +59,18 @@ procedure(ExtractPin(@optional
             cv = geGetEditCellView(getCurrentWindow())
             x = 0 ; Reset X-coordinate
             y = 0 ; Reset Y-coordinate
-            orient = "R0"
+            orient = "R0" ; Orientation is always R0 for main cellview
+            ;; Remove all current label
+            foreach(shape cv~>shapes
+                if(shape~>theLabel then
+                    dbDeleteObject(shape)
+                )
+            )
         )
 
+        ;; Append movement Matrix
         MoveMatrix = append1(MoveMatrix list(list(x) list(y)))
+        ;; Append Rotation Matrix
         RotationMatrix = append1(RotationMatrix orient_to_rotation_matrix(orient))
 
         ; Loop through all shapes in the current cellview
@@ -93,25 +101,27 @@ procedure(ExtractPin(@optional
 
                 ; Apply rotation transformation
                 LabelMatrix = list(list(x0) list(y0))
+                orient = orient_to_rotation_matrix(shape~>orient)
                 for(i 0 length(RotationMatrix)-1
                     LabelMatrix = multiply_matrices(nthelem((length(RotationMatrix) - i) RotationMatrix) LabelMatrix)
                     LabelMatrix = sum_matrices(nthelem((length(RotationMatrix) - i) MoveMatrix) LabelMatrix)
+                    orient = multiply_matrices(nthelem((length(RotationMatrix) - i) RotationMatrix) orient)
                 )
                 x1 = caar(LabelMatrix)
                 y1 = caadr(LabelMatrix)
+                orient = rotation_matrix_to_orient(orient)
 
                 ; Create a new label in the main cellview
                 dbCreateLabel(cv_main list(shape~>layerName shape~>purpose)
                     x1:y1 shape~>theLabel shape~>justify 
-                    shape~>orient shape~>font shape~>height)
+                    orient shape~>font shape~>height)
             )
         )
         ; Loop through all instances and process recursively if within depth limit
         foreach(inst cv~>instances
             if(
-                inst~>cellName != "BEOL_TOPCELL" && 
-                inst~>cellName != "FEOL_TOPCELL" &&
-                pcreMatchp("PGZ_.*" inst~>cellName) == nil
+                pcreMatchp("BEOL_.*" inst~>cellName) == nil &&
+                pcreMatchp("FEOL_.*" inst~>cellName) == nil ;; &&
                 then
                 if(depth <= maxdepth then
                     ; Call ExtractPin recursively for this instance
@@ -122,17 +132,14 @@ procedure(ExtractPin(@optional
         )
         ; Process mosaics (arrays of instances)
         foreach(mosaic cv~>mosaics
-            if(pcreMatchp("PGZ_.*" mosaic~>cellName) == nil
-                then
-              for(col 0 mosaic~>columns-1
-                  for(row 0 mosaic~>rows-1
-                      ; If the current depth is within the allowed max depth
-                      if(depth <= maxdepth then
-                          ExtractPin(text layerName purpose maxdepth depth+1 mosaic 
-                                      mosaic~>uX*col mosaic~>uY*row MoveMatrix RotationMatrix cv_main)
-                      )
-                  )
-              )
+            for(col 0 mosaic~>columns-1
+                for(row 0 mosaic~>rows-1
+                    ; If the current depth is within the allowed max depth
+                    if(depth <= maxdepth then
+                        ExtractPin(text layerName purpose maxdepth depth+1 mosaic 
+                                    mosaic~>uX*col mosaic~>uY*row MoveMatrix RotationMatrix cv_main)
+                    )
+                )
             )
         )
         t ; Return true to indicate successful completion
@@ -145,7 +152,7 @@ procedure(ExtractPin(@optional
 ;=============================================
 
 procedure(multiply_matrices(matrix_a matrix_b)
-    prog((rows_a cols_a rows_b cols_b value row_result)
+    prog((rows_a cols_a rows_b cols_b value row_result result)
         rows_a = length(matrix_a)
         cols_a = length(car(matrix_a))
         rows_b = length(matrix_b)
@@ -169,8 +176,13 @@ procedure(multiply_matrices(matrix_a matrix_b)
     )
 )
 
+;=============================================
+; Function: sum_matrices
+; Sums two matrices together and returns the result
+;=============================================
+
 procedure(sum_matrices(matrix_a matrix_b)
-    prog((rows_a cols_a rows_b cols_b value row_result)
+    prog((rows_a cols_a rows_b cols_b value row_result result)
         rows_a = length(matrix_a)
         cols_a = length(car(matrix_a))
         rows_b = length(matrix_b)
@@ -192,22 +204,68 @@ procedure(sum_matrices(matrix_a matrix_b)
 )
 
 ;=============================================
+; Function: compare_matrices
+; Sums two matrices together and returns the result
+;=============================================
+
+procedure(compare_matrices(matrix_a matrix_b)
+    prog((rows_a cols_a rows_b cols_b)
+        rows_a = length(matrix_a)
+        cols_a = length(car(matrix_a))
+        rows_b = length(matrix_b)
+        cols_b = length(car(matrix_b))
+        unless(cols_a == cols_b && rows_a == rows_b
+             error("Number of rows, columns in A must match number of rows, colums in B\n")
+        )
+        for(i 0 rows_a-1
+            for(j 0 cols_a-1
+                if(nth(j nth(i matrix_a)) !=  nth(j nth(i matrix_b)) then
+                    return(nil)
+                )
+            )
+        )
+        return(t)
+    )
+)
+
+;=============================================
 ; Function: orient_to_rotation_matrix
 ; Returns the rotation matrix for a given orientation
 ;=============================================
 
 procedure(orient_to_rotation_matrix(orient)
-    prog((rows_a cols_a rows_b cols_b value row_result)
+    prog(()
         case(orient
-            (("R0") return(list(list(1 0) list(0 1))))
-            (("R90") return(list(list(0 -1) list(1 0))))
-            (("R180") return(list(list(-1 0) list(0 -1))))
-            (("R270") return(list(list(0 1) list(-1 0))))
-            (("MX") return(list(list(1 0) list(0 -1))))
-            (("MXR90") return(list(list(0 1) list(1 0))))
-            (("MY") return(list(list(-1 0) list(0 1))))
-            (("MYR90") return(list(list(0 -1) list(-1 0))))
-            (t return(list(list(1 0) list(0 1))))
+            (("R0")     return(list(list(1 0) list(0 1))))
+            (("R90")    return(list(list(0 -1) list(1 0))))
+            (("R180")   return(list(list(-1 0) list(0 -1))))
+            (("R270")   return(list(list(0 1) list(-1 0))))
+            (("MX")     return(list(list(1 0) list(0 -1))))
+            (("MXR90")  return(list(list(0 1) list(1 0))))
+            (("MY")     return(list(list(-1 0) list(0 1))))
+            (("MYR90")  return(list(list(0 -1) list(-1 0))))
+            (t          return(list(list(1 0) list(0 1))))
+        )
+    )
+)
+
+;=============================================
+; Function: rotation_matrix_to_orient
+; Returns the orientation for given rotation_matrix
+;=============================================
+
+procedure(rotation_matrix_to_orient(rotation_matrix)
+    prog(()
+        cond(
+            (compare_matrices(rotation_matrix list(list(1 0) list(0 1)))        return("R0"))
+            (compare_matrices(rotation_matrix list(list(0 -1) list(1 0)))       return("R90"))
+            (compare_matrices(rotation_matrix list(list(-1 0) list(0 -1)))      return("R180"))
+            (compare_matrices(rotation_matrix list(list(0 1) list(-1 0)))       return("R270"))
+            (compare_matrices(rotation_matrix list(list(1 0) list(0 -1)))       return("MX"))
+            (compare_matrices(rotation_matrix list(list(0 1) list(1 0)))        return("MXR90"))
+            (compare_matrices(rotation_matrix list(list(-1 0) list(0 1)))       return("MY"))
+            (compare_matrices(rotation_matrix list(list(0 -1) list(-1 0)))      return("MYR90"))
+            (t                                                                  return("Unknown"))
         )
     )
 )
