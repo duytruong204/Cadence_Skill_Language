@@ -1,17 +1,29 @@
 ;; Global Variable
 SELECTION_TABLE_COLUMN_DEFINITIONS = list(
+    list("name"             "name")
+    list("type"             "objType" )
     list("lib"              "libName")
     list("cell"             "cellName")
-    list("name"             "name")
     list("via"              '("viaHeader" "viaDefName") )
     list("layer"            "layerName" )
     list("purpose"          "purpose" )
-    list("type"             "objType" )
     list("netname"          '("net" "name") )
     list("width"            "width" )
-    list("Origin"           "xy" )
-    list("color"            "when(OBJECT~>isShape && !OBJECT~>theLabel dbGetShapeColor(OBJECT))" )
-    list("isLock"           "when(OBJECT~>isShape && !OBJECT~>theLabel dbIsShapeColorLocked(OBJECT))" )
+    list("area"            "abeInit(geGetEditCellView()) \
+                            let((listReturn item area) \
+                                listReturn = list() \
+                                foreach(item list(OBJECT) \
+                                    area = nil \
+                                    when(item~>isShape area = abeLayerFromShapes(list(item))~>area)
+                                    listReturn = append1(listReturn area) \
+                                )  \
+                                abeDone() \
+                                listReturn \
+                                )"
+        )
+    list("origin"           "xy" )
+    list("color"            "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbGetShapeColor(OBJECT))" )
+    list("isLock"           "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbIsShapeColorLocked(OBJECT))" )
 )
 ;; Build table column definitions from SELECTION_TABLE_COLUMN_DEFINITIONS 
 ;;
@@ -19,9 +31,8 @@ SELECTION_TABLE_COLUMN_DEFINITIONS = list(
 ;; - An "id" column at the beginning
 ;; - Attribute Columns for each configured definition.
 ;; - A "count" column at the end.
-LAST_SELECTION_SET = geGetSelectedSet() 
 procedure(BuildTableColumnDefinitions(columnDefinitions)
-    let((tableColumns columnDefinition)
+    let((tableColumns)
 
         tableColumns = list()
 
@@ -63,7 +74,7 @@ procedure(BuildTableColumnDefinitions(columnDefinitions)
 ;; - A "Select All" toggle.
 ;; - One toggle for each configured column.
 procedure(BuildColumnToggleItems(columnDefinitions)
-    let((toggleItems columnDefinition)
+    let((toggleItems)
 
         toggleItems = list()
 
@@ -94,13 +105,10 @@ procedure(BuildTableSelectionSummary(columnDefinitions)
             summaryRows
             rowData
             value
-            selectedRow
             objectId
             groupKey
             groupedObjectIds
             groupedCounts
-            key
-            columnDefinition
         )
         ;; Collect selected objects and configured attributes.
         selectedColumns = list(geGetSelectedSet())
@@ -184,10 +192,7 @@ procedure(BuildTableSelectionSummary(columnDefinitions)
 ;; evaluated on each current value.
 procedure(ResolveAttributePath(objects attributePath)
     let((
-            pathElement
-            currentValues
             nextValues
-            currentValue
         )
         currentValues = objects
 
@@ -233,12 +238,15 @@ procedure(ResolveAttributePath(objects attributePath)
 ;; The report field is initialized using SELECTION_TABLE_COLUMN_DEFINITIONS.
 procedure(CreateSelectionTableForm()
     let((
-            reportField
-            refreshButton
-            selectButton
-            deselectButton
-            optionsButton
-            selectionTableForm
+            	reportField
+            	refreshButton
+            	selectButton
+            	deSelectButton
+            	gridButtonForm
+            	gridSelectionTableForm
+            	autoRefreshToggle
+			selectHeader
+            	;;selectionTableForm
         )
         
         ;; Main report field displaying grouped selection data
@@ -251,6 +259,7 @@ procedure(CreateSelectionTableForm()
                             SELECTION_TABLE_COLUMN_DEFINITIONS
                         )
 		    ?selectMode	'extended
+            ?enableDeselectCB   t
             ?callback   "ReportFieldCallBack()"
 	    )
         
@@ -269,7 +278,7 @@ procedure(CreateSelectionTableForm()
                             )
             ?defValue       list(t) 
             ?callback       list(
-                                "StartSelectionTableAutoRefresh()"                                
+                                "selectionTableForm~>refreshButton~>enabled = !car(selectionTableForm~>autoRefreshToggle~>value)"                                
                             )
         )
 
@@ -294,26 +303,55 @@ procedure(CreateSelectionTableForm()
             ?callback   "selectHeaderWindowPopUp()"
         )
 
-        ;; Create the main application form.
-        selectionTableForm =  hiCreateAppForm(
-            ?name	    'selectionTableForm
-            ?formTitle  "Selection table"
-            ?fields	    list(
-                            list(selectButton 0:0 60:30 100) 
-                            list(deSelectButton 60:0 60:30 100) 
-                            list(selectHeader 120:0 60:30 100)
-                            list(refreshButton 180:0 60:30 100) 
-                            list(autoRefreshToggle 240:0 60:30 100) 
-                            list(reportField 0:30 800:300 30)
+        ;; Close last docked window
+        foreach(winId hiGetWindowList('dockable)
+            when(winId~>hiForm == 'selectionTableForm
+                hiCloseWindow(winId) 
+            )
+        )
+        gridButtonForm = hiCreateGridLayout(
+            'gridButtonForm
+            ?items      list(
+                            list(refreshButton 'row 0 'col 0)
+                            list(autoRefreshToggle 'row 0 'col 1) 
+                            list(selectButton 'row 1 'col 0) 
+                            list(deSelectButton 'row 1 'col 1) 
+                            list(selectHeader 'row 1 'col 2) 
                         )
         )
+        gridSelectionTableForm = hiCreateGridLayout(
+            'gridSelectionTableForm
+            ?items      list(
+                            list(reportField 'row 1 'col 0 'row_span -1 )
+                        )
+        )
+
+        selectionTableForm = hiCreateLayoutForm(
+            'selectionTableForm
+            "Selection table"
+            hiCreateVerticalBoxLayout(
+                'vbox
+                ?items list(
+                    gridButtonForm
+                    gridSelectionTableForm
+                )
+            )
+            ?minSize 600:200
+        )
+        
 
         ;; Create the column configuration dialog used by
         ;; the Options button.
         CreateSelectHeaderWindowPopUp()
-        
-        ;; Display the Selection Table form.
-        hiDisplayForm('selectionTableForm)
+        ;; StartHilightSelected()
+        hiCreateDockWindow(
+            ?appType        "layout"
+            ?widgetType     "form"
+            ?form           selectionTableForm 
+            ?scrollBar      t
+            ?title          "Selection table"
+            ?dockSizeHint   list(220 900)
+        )
     )
 )
 
@@ -324,31 +362,31 @@ procedure(RefreshSelectionTable()
             reportField
         )
 
-        visibleColumnDefinitions = GetVisibleColumnDefinitions(
-            selectHeaderWindowPopUp
-        )
+            visibleColumnDefinitions = GetVisibleColumnDefinitions(
+                selectHeaderWindowPopUp
+            )
 
-        reportField = hiCreateReportField(
-            ?name       'reportField
-            ?headers    BuildTableColumnDefinitions(
-                            visibleColumnDefinitions
-                        ) 
-            ?choices    BuildTableSelectionSummary(
-                            visibleColumnDefinitions
-                        )
-            ?selectMode	'extended
-            ?callback   "ReportFieldCallBack()"
-        )
+            reportField = hiCreateReportField(
+                ?name       'reportField
+                ?headers    BuildTableColumnDefinitions(
+                                visibleColumnDefinitions
+                            ) 
+                ?choices    BuildTableSelectionSummary(
+                                visibleColumnDefinitions
+                            )
+                ?selectMode	'extended
+                ;;?callback   "ReportFieldCallBack()"
+            )
 
-        hiDeleteField(
-            selectionTableForm 
-            'reportField
-        )
+            hiDeleteField(
+                selectionTableForm 
+                'reportField
+            )
 
-        hiAddField(
-            selectionTableForm 
-            list(reportField 0:30 800:300 30)
-        )
+            hiAddField(
+                selectionTableForm 
+                list(reportField 0:60 220:900 30)
+            )
     )
 )
 
@@ -358,10 +396,7 @@ procedure(RefreshSelectionTable()
 ;; differs from the previously cached selection.
 procedure(StartSelectionTableAutoRefresh()
     if(selectionTableForm~>autoRefreshToggle~>autoRefresh~>value then
-        selectionTableForm~>refreshButton~>enabled = nil
-        hiRegTimer("when(LAST_SELECTION_SET != geGetSelectedSet() RefreshSelectionTable() LAST_SELECTION_SET = geGetSelectedSet()) StartSelectionTableAutoRefresh()" 1)
-    else
-        selectionTableForm~>refreshButton~>enabled = t
+        RefreshSelectionTable()
     )
 )
 
@@ -405,6 +440,7 @@ procedure(CreateSelectHeaderWindowPopUp()
             ?buttonLayout   'OKCancel
             ?callback       "RefreshSelectionTable()"
         )
+
         hiSetFormSize(
             selectHeaderWindowPopUp
             30:300 
@@ -420,7 +456,6 @@ procedure(GetVisibleColumnDefinitions(form)
     let((
             selectedColumnNames
             visibleColumnDefinitions
-            columnDefinition
         )
 
         selectedColumnNames = list()
@@ -471,18 +506,60 @@ procedure(ToggleAllColumnSelections(form)
 )
 
 procedure(ReportFieldCallBack()
-    let((selectedRow idSelects idSelect)
+    let(()
+        t
+        ;; hilightSelected()
+    )
+)
+
+procedure(hilightSelected()
+    let((cv selectedRow idSelects)
         foreach(selectedRow  hiReportGetSelectedItems(selectionTableForm~>reportField)
-            idSelects = car(nth(selectedRow selectionTableForm~>reportField~>choices))
-            ;;foreach(idSelect idSelects
-            ;;     hiFormDone(idSelect) 
-            ;;)
+            idSelects = append(
+                idSelects
+                car(nth(selectedRow selectionTableForm~>reportField~>choices))
+            )
+            cv=geGetWindowCellView()
+            HIGHLIGHT_SET = geCreateHilightSet(cv list("hilite" "drawing1") nil)
+            HIGHLIGHT_SET->enable = t
+            foreach(idSelect idSelects
+                geAddHilightFig(HIGHLIGHT_SET idSelect)
+            )
         )
     )
 )
 
+;; procedure(StartHilightSelected()
+;;     let(()
+;;         hiRegTimer("when(geGetWindowCellView() hilightSelected()) StartHilightSelected()" 1)
+;;     )
+;; )
+
+
 procedure(selectButtonCallBack()
-    let((selectedRow idSelects idSelect)
+    let((selectedRow selectedRows index idSelects idSelect)
+        idSelects = list()
+        selectedRows = list()
+        foreach(selectedRow  hiReportGetSelectedItems(selectionTableForm~>reportField)
+            selectedRows = append1(selectedRows selectedRow)
+        )
+        for(index 0 length(selectionTableForm~>reportField~>choices)-1
+            when(!member(index selectedRows)
+                idSelects = append(
+                    idSelects
+                    car(nth(index selectionTableForm~>reportField~>choices))
+                )
+            )
+        )
+        foreach(idSelect idSelects
+            geDeselectObject(idSelect) 
+        )
+        RefreshSelectionTable()
+    )
+)
+
+procedure(deSelectButtonCallBack()
+    let((idSelects)
         idSelects = list()
         foreach(selectedRow  hiReportGetSelectedItems(selectionTableForm~>reportField)
             idSelects = append(
@@ -490,35 +567,65 @@ procedure(selectButtonCallBack()
                 car(nth(selectedRow selectionTableForm~>reportField~>choices))
             )
         )
-        geDeselectAllFig()
         foreach(idSelect idSelects
-            geSelectObject(idSelect) 
+            geDeselectFig(idSelect) 
         )
+        RefreshSelectionTable()
     )
 )
 
-procedure(deSelectButtonCallBack()
-    let((selectedRows unSelectedRow idSelects idSelect)
-        idSelects = list()
-        selectedRows = hiReportGetSelectedItems(selectionTableForm~>reportField)
-
-        for(unSelectedRow 0 length(selectionTableForm~>reportField~>choices)
-            unless(member(unSelectedRow selectedRows)
-                idSelects = append(
-                    idSelects
-                    car(nth(unSelectedRow selectionTableForm~>reportField~>choices))
-                )
-            )
-        )
-        geDeselectAllFig()
-        foreach(idSelect idSelects
-            geSelectObject(idSelect) 
-        )
-    )
-)
 procedure(selectHeaderWindowPopUp()
     hiDisplayForm('selectHeaderWindowPopUp)
 )
 
+procedure(showDockWindow()
+    let((foundDockWindow)
+        foundDockWindow = nil
+        foreach(winId hiGetWindowList('dockable)
+            when(winId~>hiForm == 'selectionTableForm
+                foundDockWindow = t
+                hiDockWindow(
+                    ?window winId 
+                    ?session when(
+                                getCurrentWindow() != nil hiGetSessionWindow(getCurrentWindow())
+                            ) 
+                    ?side 'right
+                )
+            )
+        )
+        when(!foundDockWindow
+            CreateSelectionTableForm()
+            foreach(winId hiGetWindowList('dockable)
+                when(winId~>hiForm == 'selectionTableForm
+                    foundDockWindow = t
+                    hiDockWindow(
+                        ?window winId 
+                        ?session when(
+                                    getCurrentWindow() != nil hiGetSessionWindow(getCurrentWindow())
+                                ) 
+                        ?side 'right
+                    )
+                )
+            )
+        )
+    )
+)
+
 CreateSelectionTableForm()
-StartSelectionTableAutoRefresh()
+showDockWindow()
+
+hiSetBindKey("Layout" "None<Btn1Down>"   "mouseSingleSelectPt() StartSelectionTableAutoRefresh()")
+hiSetBindKey("Layout" "Shift<Btn1Down>"  "mouseAddSelectPt() StartSelectionTableAutoRefresh()")
+hiSetBindKey("Layout" "Ctrl<Btn1Down>"   "mouseSubSelectPt() StartSelectionTableAutoRefresh()")
+
+hiSetBindKeys( "Layout" list(
+    list("<DrawThru1>"  "leSelBoxOrStretch() StartSelectionTableAutoRefresh()"  "geSingleSelectBox() StartSelectionTableAutoRefresh()")
+    list("Shift<DrawThru1>"  "geAddSelectBox() StartSelectionTableAutoRefresh()"  "geAddSelectBox() StartSelectionTableAutoRefresh()")
+    list("Ctrl<DrawThru1>"  "geSubSelectBox() StartSelectionTableAutoRefresh()"  "geSubSelectBox() StartSelectionTableAutoRefresh()")
+)) 
+
+hiSetBindKey("Layout" "Ctrl<key>A"      "geSelectAllFig() StartSelectionTableAutoRefresh()")
+hiSetBindKey("Layout" "Ctrl<key>D"      "geDeselectAllFig() StartSelectionTableAutoRefresh()")
+hiSetBindKey("Layout" "<key>Delete"     "leHiDelete() StartSelectionTableAutoRefresh()")
+
+hiSetBindKey("Layout" "Ctrl Shift<key> Q" "showDockWindow()")
