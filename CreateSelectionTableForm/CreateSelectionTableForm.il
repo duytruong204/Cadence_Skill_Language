@@ -1,29 +1,19 @@
 ;; Global Variable
 SELECTION_TABLE_COLUMN_DEFINITIONS = list(
-    list("name"             "name")
-    list("type"             "objType" )
-    list("lib"              "libName")
-    list("cell"             "cellName")
-    list("via"              '("viaHeader" "viaDefName") )
-    list("layer"            "layerName" )
-    list("purpose"          "purpose" )
-    list("netname"          '("net" "name") )
-    list("width"            "width" )
-    list("area"            "abeInit(geGetEditCellView()) \
-                            let((listReturn item area) \
-                                listReturn = list() \
-                                foreach(item list(OBJECT) \
-                                    area = nil \
-                                    when(item~>isShape area = abeLayerFromShapes(list(item))~>area)
-                                    listReturn = append1(listReturn area) \
-                                )  \
-                                abeDone() \
-                                listReturn \
-                                )"
-        )
+    list("name"             "OBJECT~>name")
+    list("type"             "OBJECT~>objType" )
+    list("lib"              "OBJECT~>libName")
+    list("cell"             "OBJECT~>cellName")
+    list("via"              "OBJECT~>viaHeader~>viaDefName")
+    list("layer"            "OBJECT~>layerName" )
+    list("purpose"          "OBJECT~>purpose" )
+    list("netname"          "OBJECT~>net~>name")
+    list("width"            "OBJECT~>width" )
+    list("area"             "let((area) abeInit(geGetEditCellView()) when(OBJECT~>isShape area = abeLayerFromShapes(list(OBJECT))~>area) abeDone() area)")
     list("origin"           "xy" )
     list("color"            "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbGetShapeColor(OBJECT))" )
     list("isLock"           "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbIsShapeColorLocked(OBJECT))" )
+    list("DFB_srcCell"      "when(OBJECT~>master~>superMaster cdfFindParamByName(cdfGetInstCDF(OBJECT) \"srcCell\")~>value)")
 )
 ;; Build table column definitions from SELECTION_TABLE_COLUMN_DEFINITIONS 
 ;;
@@ -101,85 +91,96 @@ procedure(BuildColumnToggleItems(columnDefinitions)
 procedure(BuildTableSelectionSummary(columnDefinitions)
     let((
             selectedColumns
-            selectionRows
-            summaryRows
-            rowData
+            groupedObjectIds
+            groupedCounts
+            rowCount
+            columnCount
+            rowIndex
+            columnIndex
             value
             objectId
             groupKey
-            groupedObjectIds
-            groupedCounts
+            keyValues
+            summaryRows
+            rowData
         )
-        ;; Collect selected objects and configured attributes.
+
+        ;; Collect selected objects and configured attributes
         selectedColumns = list(geGetSelectedSet())
 
-        foreach(columnDefinition columnDefinitions 
-            selectedColumns = append(
-                selectedColumns  
-                list(
-                    ResolveAttributePath(
-                        geGetSelectedSet() 
-                        cadr(columnDefinition)
-                    )
+        foreach(columnDefinition columnDefinitions
+            selectedColumns = cons(
+                ResolveAttributePath(
+                    geGetSelectedSet()
+                    cadr(columnDefinition)
                 )
+                selectedColumns
             )
         )
 
-        ;; Build one row per selected object
-        selectionRows = list()
+        selectedColumns = reverse(selectedColumns)
 
-        for(rowIndex  0 length(car(selectedColumns))-1
-            rowData = list()
+        rowCount = length(car(selectedColumns))
+        columnCount = length(selectedColumns)
 
-            for(columnIndex 0 length(selectedColumns)-1
-                value = nth(rowIndex nth(columnIndex selectedColumns))
+        ;; Hash tables for grouping
+        groupedObjectIds = makeTable("groupedObjectIds" nil)
+        groupedCounts    = makeTable("groupedCounts" 0)
+
+        ;; Build grouping directly
+        for(rowIndex 0 rowCount - 1
+
+            objectId = nth(rowIndex car(selectedColumns))
+            keyValues = nil
+
+            for(columnIndex 1 columnCount - 1
+
+                value = nth(
+                    rowIndex
+                    nth(columnIndex selectedColumns)
+                )
 
                 unless(stringp(value)
-                    when(columnIndex != 0
-                        value = sprintf(nil "%L" value)
-                    )
+                    value = sprintf(nil "%L" value)
                 )
-                rowData = append1(rowData value)
+
+                keyValues = cons(value keyValues)
             )
 
-            selectionRows = append1(selectionRows rowData) 
+            groupKey = reverse(keyValues)
+
+            groupedObjectIds[groupKey] =
+                cons(
+                    objectId
+                    groupedObjectIds[groupKey]
+                )
+
+            groupedCounts[groupKey] =
+                groupedCounts[groupKey] + 1
         )
 
-        ;; Group rows by attribute values
-        groupedObjectIds = makeTable("groupedObjectIds" list())
-        groupedCounts = makeTable("groupedCounts" 0)
+        ;; Build summary rows
+        summaryRows = nil
 
-        foreach(selectedRow selectionRows
-            objectId = car(selectedRow)
-            groupKey = cdr(selectedRow)
+        foreach(key groupedObjectIds->?
 
-            groupedObjectIds[groupKey] = append1(
-                groupedObjectIds[groupKey] 
-                objectId
+            rowData = cons(
+                reverse(groupedObjectIds[key])
+                key
             )
 
-            groupedCounts[groupKey] = groupedCounts[groupKey] + 1 
+            rowData = append1(
+                rowData
+                groupedCounts[key]
+            )
+
+            summaryRows = cons(rowData summaryRows)
         )
 
-        ;; Build final summary rows
-        summaryRows = list()
-        
-        foreach(key groupedObjectIds~>?
-            rowData = list()
-            
-            ;;value = sprintf(nil "%L" groupedObjectIds[key])
-            value = groupedObjectIds[key]
-            
-            rowData = append1(rowData value)
-            rowData = cons(car(rowData) key)
-            rowData = append1(rowData groupedCounts[key])
-
-            summaryRows = append(summaryRows list(rowData))
-        )
-
-        summaryRows
+        reverse(summaryRows)
     )
 )
+
 
 ;; Resolve an attribute path against one or more objects.
 ;;
@@ -575,43 +576,41 @@ procedure(deSelectButtonCallBack()
 )
 
 procedure(selectHeaderWindowPopUp()
-    hiDisplayForm('selectHeaderWindowPopUp)
+    hiDisplayForm('selectHeaderWindowPopUp 2000:180)
 )
 
-procedure(showDockWindow()
-    let((foundDockWindow)
-        foundDockWindow = nil
+
+procedure(GetDockWindowByName(winName)
+    prog(()
+        winId = nil
         foreach(winId hiGetWindowList('dockable)
-            when(winId~>hiForm == 'selectionTableForm
-                foundDockWindow = t
-                hiDockWindow(
-                    ?window winId 
-                    ?session when(
-                                getCurrentWindow() != nil hiGetSessionWindow(getCurrentWindow())
-                            ) 
-                    ?side 'right
-                )
-            )
-        )
-        when(!foundDockWindow
-            CreateSelectionTableForm()
-            foreach(winId hiGetWindowList('dockable)
-                when(winId~>hiForm == 'selectionTableForm
-                    foundDockWindow = t
-                    hiDockWindow(
-                        ?window winId 
-                        ?session when(
-                                    getCurrentWindow() != nil hiGetSessionWindow(getCurrentWindow())
-                                ) 
-                        ?side 'right
-                    )
-                )
+            when(hiGetWindowName(winId) == winName 
+                return(winId)
             )
         )
     )
 )
 
-CreateSelectionTableForm()
+procedure(showDockWindow()
+    let((winId)
+        winId = GetDockWindowByName("Selection table") 
+        unless(winId && hiGetSessionWindow(getCurrentWindow()) == hiGetSessionWindow(winId)
+            CreateSelectionTableForm()
+        )
+        winId = GetDockWindowByName("Selection table")
+        hiDockWindow(
+            ?window winId 
+            ?session when(
+                        getCurrentWindow() != nil hiGetSessionWindow(getCurrentWindow())
+                    ) 
+            ?side 'right
+        )
+    )
+)
+
+
+
+;; CreateSelectionTableForm()
 showDockWindow()
 
 hiSetBindKey("Layout" "None<Btn1Down>"   "mouseSingleSelectPt() StartSelectionTableAutoRefresh()")
