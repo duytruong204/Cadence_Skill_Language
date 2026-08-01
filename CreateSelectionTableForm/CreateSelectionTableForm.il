@@ -10,9 +10,10 @@ SELECTION_TABLE_COLUMN_DEFINITIONS = list(
     list("netname"          "OBJECT~>net~>name")
     list("width"            "OBJECT~>width" )
     list("area"             "let((area) abeInit(geGetEditCellView()) when(OBJECT~>isShape area = abeLayerFromShapes(list(OBJECT))~>area) abeDone() area)")
-    list("origin"           "xy" )
+    list("origin"           "OBJECT~>xy" )
     list("color"            "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbGetShapeColor(OBJECT))" )
     list("isLock"           "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbIsShapeColorLocked(OBJECT))" )
+    ;; More Custom
     list("DFB_srcCell"      "when(OBJECT~>master~>superMaster cdfFindParamByName(cdfGetInstCDF(OBJECT) \"srcCell\")~>value)")
 )
 ;; Build table column definitions from SELECTION_TABLE_COLUMN_DEFINITIONS 
@@ -194,6 +195,7 @@ procedure(BuildTableSelectionSummary(columnDefinitions)
 procedure(ResolveAttributePath(objects attributePath)
     let((
             nextValues
+            currentValues
         )
         currentValues = objects
 
@@ -581,7 +583,7 @@ procedure(selectHeaderWindowPopUp()
 
 
 procedure(GetDockWindowByName(winName)
-    prog(()
+    prog((winId)
         winId = nil
         foreach(winId hiGetWindowList('dockable)
             when(hiGetWindowName(winId) == winName 
