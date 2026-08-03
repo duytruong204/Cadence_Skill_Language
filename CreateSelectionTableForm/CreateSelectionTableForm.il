@@ -4,7 +4,8 @@ SELECTION_TABLE_COLUMN_DEFINITIONS = list(
     list("type"             "OBJECT~>objType" )
     list("lib"              "OBJECT~>libName")
     list("cell"             "OBJECT~>cellName")
-    list("via"              "OBJECT~>viaHeader~>viaDefName")
+    list("via"              "nth(0 OBJECT~>viaHeader~>viaDef~>params)")
+    list("ViaSize"          "list(nth(1 OBJECT~>viaHeader~>viaDef~>params) nth(2 OBJECT~>viaHeader~>viaDef~>params))")
     list("layer"            "OBJECT~>layerName" )
     list("purpose"          "OBJECT~>purpose" )
     list("netname"          "OBJECT~>net~>name")
@@ -612,7 +613,7 @@ procedure(showDockWindow()
 
 
 
-;; CreateSelectionTableForm()
+CreateSelectionTableForm()
 showDockWindow()
 
 hiSetBindKey("Layout" "None<Btn1Down>"   "mouseSingleSelectPt() StartSelectionTableAutoRefresh()")
