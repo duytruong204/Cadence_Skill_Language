@@ -271,17 +271,22 @@ procedure(CreateSelectionTableForm()
             	autoRefreshToggle
 			    selectHeader
                 searchField
+                GetVisibleColumnDefinitions
             	;;selectionTableForm
         )
         
         ;; Main report field displaying grouped selection data
+        visibleColumnDefinitions = GetVisibleColumnDefinitions(
+            selectHeaderWindowPopUp
+        )
+
         reportField = hiCreateReportField(
 		    ?name       'reportField
 		    ?headers    BuildTableColumnDefinitions(
-                            SELECTION_TABLE_COLUMN_DEFINITIONS
+                            visibleColumnDefinitions 
                         ) 
             ?choices    BuildTableSelectionSummary(
-                            SELECTION_TABLE_COLUMN_DEFINITIONS
+                            visibleColumnDefinitions 
                         )
 		    ?selectMode	'extended
             ?enableDeselectCB   t
@@ -385,7 +390,7 @@ procedure(CreateSelectionTableForm()
         ;; Create the column configuration dialog used by
         ;; the Options button.
         CreateSelectHeaderWindowPopUp()
-        ;; StartHilightSelected()
+
         hiCreateDockWindow(
             ?appType        "layout"
             ?widgetType     "form"
@@ -504,8 +509,12 @@ procedure(CreateSelectHeaderWindowPopUp()
         ;; One default value is required for each toggle item,
         ;; including the "Select All" option.
         defaultToggleValues = list()
-        for(i 0 length(SELECTION_TABLE_COLUMN_DEFINITIONS)
-            defaultToggleValues = append1(defaultToggleValues  t)
+        if(selectHeaderWindowPopUp~>toggleField~>value then
+            defaultToggleValues = selectHeaderWindowPopUp~>toggleField~>value
+        else 
+            for(i 0 length(SELECTION_TABLE_COLUMN_DEFINITIONS)
+                defaultToggleValues = append1(defaultToggleValues  t)
+            )
         )
 
         toggleField = hiCreateToggleField( 
@@ -584,7 +593,6 @@ procedure(ToggleAllColumnSelections(form)
 
         valueSet = list()
 
-        
         for(index 0 length(form~>toggleField~>value) - 1
             valueSet = append1(valueSet toggleValue)
         )
@@ -613,29 +621,6 @@ procedure(ReportFieldCallBack()
         )
     )
 )
-
-;; procedure(selectItemInPropertiesEditor()
-;;     let((cv idSelects propertiesEditorName)
-;;         cv = geGetWindowCellView()
-;;         foreach(selectedRow  hiReportGetSelectedItems(selectionTableForm~>reportField)
-;;             idSelects = append(
-;;                 idSelects
-;;                 car(nth(selectedRow selectionTableForm~>reportField~>choices))
-;;             )
-;;         )
-;;         propertiesEditorName = strcat("gevPl" cv~>libName cv~>cellName cv~>viewName "CDFForm")
-;;         foreach(appform hiFormList()
-;;             when(rexMatchp(propertiesEditorName appform)
-;;                 println(symeval(appform)~>??)
-;;                 foreach(idSelect idSelects
-;;                     symeval(appform)~>figId = idSelects 
-;;                 )
-;;             )
-;;         )
-;;         t
-;;     )
-;; )
-
 
 procedure(selectButtonCallBack()
     let((selectedRow selectedRows index idSelects idSelect)
