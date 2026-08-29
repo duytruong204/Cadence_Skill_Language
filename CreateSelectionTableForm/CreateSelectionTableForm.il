@@ -20,6 +20,7 @@ SELECTION_TABLE_COLUMN_DEFINITIONS = list(
 
     list("area"             "let((area) abeInit(geGetEditCellView()) when(OBJECT~>isShape area = abeLayerFromShapes(list(OBJECT))~>area) abeDone() area)")
     list("origin"           "OBJECT~>xy")
+    list("bBox"             "OBJECT~>bBox")
 
     list("color"            "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbGetShapeColor(OBJECT))" )
     list("isLock"           "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbIsShapeColorLocked(OBJECT))" )
@@ -37,6 +38,7 @@ SELECTION_TABLE_COLUMN_DEFINITIONS = list(
 
 GLOBAL_HIGHLIGHT_SET = nil
 
+selectHeaderWindowPopUp = nil
 ;; Build table column definitions from SELECTION_TABLE_COLUMN_DEFINITIONS 
 ;;
 ;; Adds
@@ -275,6 +277,11 @@ procedure(CreateSelectionTableForm()
             	;;selectionTableForm
         )
         
+
+        ;; Create the column configuration dialog used by
+        ;; the Options button.
+        CreateSelectHeaderWindowPopUp()
+        
         ;; Main report field displaying grouped selection data
         visibleColumnDefinitions = GetVisibleColumnDefinitions(
             selectHeaderWindowPopUp
@@ -385,11 +392,6 @@ procedure(CreateSelectionTableForm()
             )
             ?minSize 600:200
         )
-        
-
-        ;; Create the column configuration dialog used by
-        ;; the Options button.
-        CreateSelectHeaderWindowPopUp()
 
         hiCreateDockWindow(
             ?appType        "layout"
@@ -509,7 +511,7 @@ procedure(CreateSelectHeaderWindowPopUp()
         ;; One default value is required for each toggle item,
         ;; including the "Select All" option.
         defaultToggleValues = list()
-        if(selectHeaderWindowPopUp~>toggleField~>value then
+        if(boundp('selectHeaderWindowPopUp) then
             defaultToggleValues = selectHeaderWindowPopUp~>toggleField~>value
         else 
             for(i 0 length(SELECTION_TABLE_COLUMN_DEFINITIONS)
