@@ -11,9 +11,8 @@ let( (drawLayers mainLayer purposeList currentEntryLayer returnLayer mainPurpose
   purposeList = list(mainPurpose "pin" "dummy" "odummy" "drawing1" "blockage" "v_sync" "v_high" "v_low" "v_high_top" "v_low_top")
   currentEntryLayer = leGetEntryLayer()
 
-    ;(0 drawLayers = list( "VD" "VDR" "VG" "M0" "OD" "CM0A" "CM0B" "BCM0" "BCM0V" "BCMD" "MD" "PO" "CPO") mainLayer = "M0")
   case(num 
-    (0 drawLayers = list( "M0" "CM0A" "CM0B" "VD" "VG") mainLayer = "M0")
+    (0 drawLayers = list( "M0" "CM0A" "CM0B" "BCM0V" "VD" "VG") mainLayer = "M0")
     (1 drawLayers = list( "VIA0" "M1" "VIA1" ) mainLayer = "M1")
     (2 drawLayers = list( "VIA1" "M2" "VIA2" ) mainLayer = "M2")
     (3 drawLayers = list( "VIA2" "M3" "VIA3" ) mainLayer = "M3")
@@ -32,7 +31,8 @@ let( (drawLayers mainLayer purposeList currentEntryLayer returnLayer mainPurpose
     (16 drawLayers = list( "VIA15" "M16" "VIA16" ) mainLayer = "M16")
     (17 drawLayers = list( "VIA16" "M17" "VIA17" ) mainLayer = "M17")
     (18 drawLayers = list( "VIA17" "M18" "VIA18" ) mainLayer = "M18")
-    (19 drawLayers = list( "VIA18" "M19"         ) mainLayer = "M19")
+    (19 drawLayers = list( "VIA18" "M19" "RV"    ) mainLayer = "M19")
+    (20 drawLayers = list( "RV" "AP") mainLayer = "AP")
   ); case
 
   if(list(mainLayer mainPurpose) == currentEntryLayer then
@@ -81,3 +81,4 @@ hiSetBindKey("Layout" "Ctrl<Key>6" "toggleVisibleLayers(16)")
 hiSetBindKey("Layout" "Ctrl<Key>7" "toggleVisibleLayers(17)")
 hiSetBindKey("Layout" "Ctrl<Key>8" "toggleVisibleLayers(18)")
 hiSetBindKey("Layout" "Ctrl<Key>9" "toggleVisibleLayers(19)")
+hiSetBindKey("Layout" "Ctrl Shift<Key>0" "toggleVisibleLayers(20)")
