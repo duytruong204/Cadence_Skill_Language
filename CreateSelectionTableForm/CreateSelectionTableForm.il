@@ -1,5 +1,20 @@
+;; Selection Table
+;;
+;; A dockable form for Layout windows that summarizes the current selection.
+;; Selected objects are grouped by the values of the columns ticked in the
+;; Options dialog, with one table row per unique combination and a count.
+;;
+;; - Clicking a row highlights its objects.
+;; - "select" keeps only the highlighted rows selected, "deSelect" removes them.
+;; - The table follows the selection through a poller (see "Selection polling").
+;; - Ctrl Shift Q opens the table. All names start with "stbl" to avoid
+;;   clashing with other skill files.
+;;
 ;; Global Variable
-SELECTION_TABLE_COLUMN_DEFINITIONS = list(
+;;
+;; Each column is list(name expression [setupExpression cleanupExpression]).
+;; In expression, OBJECT stands for the selected object.
+stblColumnDefinitions = list(
     ;; Common
     list("name"             "OBJECT~>name")
     list("type"             "OBJECT~>objType")
@@ -18,8 +33,13 @@ SELECTION_TABLE_COLUMN_DEFINITIONS = list(
 
     list("text"             "OBJECT~>owner~>name")
 
-    list("area"             "let((area) abeInit(geGetEditCellView()) when(OBJECT~>isShape area = abeLayerFromShapes(list(OBJECT))~>area) abeDone() area)")
-    list("origin"           "OBJECT~>xy")
+    ;; Optional 3rd / 4th entries are evaluated once per refresh, before and
+    ;; after the expression is applied to all selected objects.
+    list("area"             "when(OBJECT~>isShape abeLayerFromShapes(list(OBJECT))~>area)"
+                            "abeInit(geGetEditCellView())"
+                            "abeDone()")
+    list("x"                "car(OBJECT~>xy)")
+    list("y"                "cadr(OBJECT~>xy)")
     list("bBox"             "OBJECT~>bBox")
 
     list("color"            "when(OBJECT~>isShape && !OBJECT~>theLabel && OBJECT~>objType != \"textDisplay\" dbGetShapeColor(OBJECT))" )
@@ -36,49 +56,39 @@ SELECTION_TABLE_COLUMN_DEFINITIONS = list(
     list("STD_marker_markOnTop" "when(OBJECT~>master~>superMaster cdfFindParamByName(cdfGetInstCDF(OBJECT) \"Mark_As_Top_Level\")~>value)")
 )
 
-GLOBAL_HIGHLIGHT_SET = nil
 
-selectHeaderWindowPopUp = nil
-;; Build table column definitions from SELECTION_TABLE_COLUMN_DEFINITIONS 
+;; Highlight set holding the objects of the rows picked in the table.
+stblHighlightSet = nil
+
+;; Layer-purpose pair used to highlight the rows picked in the table.
+;; It must exist in the tech file of the cellview being edited.
+stblHighlightLayer = list("y4" "drawing")
+
+
+;; Options dialog holding the column visibility toggles.
+;; Created together with the table form.
+stblOptionsForm = nil
+
+;; Build table column definitions from stblColumnDefinitions 
 ;;
 ;; Adds
 ;; - An "id" column at the beginning
 ;; - Attribute Columns for each configured definition.
 ;; - A "count" column at the end.
-procedure(BuildTableColumnDefinitions(columnDefinitions)
-    let((tableColumns)
-
-        tableColumns = list()
-
-        ;; Add identifier column.
-        tableColumns = append(
-            tableColumns
-            list(
-                list(
-                    "id" 0 stringToSymbol("left") stringToSymbol("string") t)
-            )
-        )
-
-        ;; Create columns from configuration
-        foreach(columnDefinition columnDefinitions 
-            tableColumns = append(
-                tableColumns
-                list(
-                    ;; list(car(columnDefinition) length(car(columnDefinition))*10 stringToSymbol("left") stringToSymbol("string") t)
-                    list(car(columnDefinition) 70 stringToSymbol("left") stringToSymbol("string") t)
+procedure(stblBuildTableColumnDefinitions(columnDefinitions)
+    ;; Add identifier column, one column per configured definition,
+    ;; and the occurrence count column.
+    cons(
+        list("id" 0 'left 'string t)
+        append(
+            mapcar(
+                lambda((columnDefinition)
+                    list(car(columnDefinition) 70 'left 'string t)
                 )
+                columnDefinitions
             )
+            list(list("count" 50 'left 'int t))
         )
-
-        ;; Add occurrence count column
-        tableColumns = append(
-            tableColumns 
-            list(
-                list("count" length("count")*10 stringToSymbol("left") stringToSymbol("int") t)
-            )
-        )
-
-        tableColumns 
     )
 )
 
@@ -87,20 +97,16 @@ procedure(BuildTableColumnDefinitions(columnDefinitions)
 ;; Adds:
 ;; - A "Select All" toggle.
 ;; - One toggle for each configured column.
-procedure(BuildColumnToggleItems(columnDefinitions)
-    let((toggleItems)
-
-        toggleItems = list()
-
-        ;; Add select-all option
-        toggleItems = append(toggleItems list(list(stringToSymbol("Select All"))))
-
-        ; Add one toggle item per column
-        foreach(columnDefinition columnDefinitions
-            toggleItems = append(toggleItems list(list(stringToSymbol(car(columnDefinition)))))
+procedure(stblBuildColumnToggleItems(columnDefinitions)
+    ;; Select-all option followed by one toggle item per column
+    cons(
+        list(stringToSymbol("Select All"))
+        mapcar(
+            lambda((columnDefinition)
+                list(stringToSymbol(car(columnDefinition)))
+            )
+            columnDefinitions
         )
-
-        toggleItems 
     )
 )
 
@@ -112,93 +118,64 @@ procedure(BuildColumnToggleItems(columnDefinitions)
 ;;     attributeValues...
 ;;     occurrenceCount
 ;; )
-procedure(BuildTableSelectionSummary(columnDefinitions)
+procedure(stblBuildTableSelectionSummary(columnDefinitions)
     let((
-            selectedColumns
+            selectedSet
+            remainingColumns
             groupedObjectIds
-            groupedCounts
-            rowCount
-            columnCount
-            rowIndex
-            columnIndex
-            value
-            objectId
             groupKey
-            keyValues
+            objectIds
             summaryRows
-            rowData
         )
 
-        ;; Collect selected objects and configured attributes
-        selectedColumns = list(geGetSelectedSet())
+        ;; Collect selected objects and resolve each configured attribute once
+        selectedSet = when(getCurrentWindow() geGetSelectedSet())
 
-        foreach(columnDefinition columnDefinitions
-            selectedColumns = cons(
-                ResolveAttributePath(
-                    geGetSelectedSet()
+        ;; One list of values per column, aligned with selectedSet.
+        ;; Each row's values are taken from the head of every column,
+        ;; then every column is advanced, so no nth() lookups are needed.
+        remainingColumns = mapcar(
+            lambda((columnDefinition)
+                stblResolveAttributePath(
+                    selectedSet
                     cadr(columnDefinition)
+                    caddr(columnDefinition)
+                    cadddr(columnDefinition)
                 )
-                selectedColumns
             )
+            columnDefinitions
         )
 
-        selectedColumns = reverse(selectedColumns)
-
-        rowCount = length(car(selectedColumns))
-        columnCount = length(selectedColumns)
-
-        ;; Hash tables for grouping
+        ;; Group object ids by their attribute values
+        ;; (key: list of the row's values as strings, value: list of object ids)
         groupedObjectIds = makeTable("groupedObjectIds" nil)
-        groupedCounts    = makeTable("groupedCounts" 0)
 
-        ;; Build grouping directly
-        for(rowIndex 0 rowCount - 1
-
-            objectId = nth(rowIndex car(selectedColumns))
-            keyValues = nil
-
-            for(columnIndex 1 columnCount - 1
-
-                value = nth(
-                    rowIndex
-                    nth(columnIndex selectedColumns)
+        foreach(objectId selectedSet
+            ;; Row key built from the head of every column list
+            groupKey = mapcar(
+                lambda((column)
+                    let((value)
+                        value = car(column)
+                        if(stringp(value) then value else sprintf(nil "%L" value))
+                    )
                 )
-
-                unless(stringp(value)
-                    value = sprintf(nil "%L" value)
-                )
-
-                keyValues = cons(value keyValues)
+                remainingColumns
             )
+            ;; Advance every column to the next object
+            remainingColumns = mapcar('cdr remainingColumns)
 
-            groupKey = reverse(keyValues)
-
-            groupedObjectIds[groupKey] =
-                cons(
-                    objectId
-                    groupedObjectIds[groupKey]
-                )
-
-            groupedCounts[groupKey] =
-                groupedCounts[groupKey] + 1
+            groupedObjectIds[groupKey] = cons(objectId groupedObjectIds[groupKey])
         )
 
-        ;; Build summary rows
+        ;; Build summary rows: (objectIds attributeValues... count)
         summaryRows = nil
 
         foreach(key groupedObjectIds->?
-
-            rowData = cons(
-                reverse(groupedObjectIds[key])
-                key
+            objectIds = reverse(groupedObjectIds[key])
+            summaryRows = cons(
+                cons(objectIds append1(key length(objectIds)))
+                summaryRows
             )
-
-            rowData = append1(
-                rowData
-                groupedCounts[key]
-            )
-
-            summaryRows = cons(rowData summaryRows)
         )
 
         reverse(summaryRows)
@@ -206,19 +183,35 @@ procedure(BuildTableSelectionSummary(columnDefinitions)
 )
 
 
+;; Call evaluator on value, returning nil if the evaluation raises an error.
+procedure(stblEvaluateSafely(evaluator value)
+    let((result)
+        result = errset(funcall(evaluator value))
+        when(result car(result))
+    )
+)
+
 ;; Resolve an attribute path against one or more objects.
 ;;
-;; Examples:
-;;     "layerName"          ==> object~>layerName
-;;     '("net" "name")      ==> object~>net~>name
-;;     '("bBox" "car()")    ==> car(object~>bBox)
+;; Returns one value per object, in the same order as objects.
+;; The path is a string or a list of strings. Each element is applied to the
+;; values produced by the previous element (the objects for the first one):
 ;;
-;; Function calls are identified by the "()" suffix and
-;; evaluated on each current value.
-procedure(ResolveAttributePath(objects attributePath)
+;;     "OBJECT~>net~>name"      ==> evaluate the expression, OBJECT being the
+;;                                  current value
+;;     "layerName"              ==> dbGet(currentValue "layerName")
+;;     '("net" "name")          ==> dbGet(dbGet(object "net") "name")
+;;
+;; An element containing "OBJECT" is an expression and is evaluated on each
+;; current value. Any other element is an attribute name read with dbGet.
+;; A value that can not be resolved becomes nil instead of raising an error.
+;;
+;; setupExpression and cleanupExpression are optional strings evaluated once,
+;; before and after the path is applied to all objects.
+procedure(stblResolveAttributePath(objects attributePath @optional setupExpression cleanupExpression)
     let((
-            nextValues
             currentValues
+            evaluator
         )
         currentValues = objects
 
@@ -226,27 +219,44 @@ procedure(ResolveAttributePath(objects attributePath)
             attributePath = list(attributePath)
         )
 
+        ;; Run the one-time setup (e.g. abeInit) once, not once per object.
+        when(objects && setupExpression
+            errset(evalstring(setupExpression))
+        )
+
         foreach(pathElement attributePath
 
             if(rexMatchp("OBJECT" pathElement) then
 
-                nextValues = list()
-
+                ;; Parse the expression once, then call it for every object.
                 rexCompile("OBJECT")
-
-                foreach(currentValue currentValues
-                    nextValues = append1(
-                        nextValues
-                        evalstring(
-                            rexReplace(pathElement "currentValue" 0) 
-                        )
+                evaluator = evalstring(
+                    sprintf(
+                        nil
+                        "lambda((currentValue) %s)"
+                        rexReplace(pathElement "currentValue" 0)
                     )
                 )
 
-                currentValues = nextValues
+                ;; A failing expression (e.g. area on a non-shape) gives nil for
+                ;; that object instead of aborting the whole refresh.
+                currentValues = foreach(mapcar currentValue currentValues
+                    stblEvaluateSafely(evaluator currentValue)
+                )
             else
-                currentValues = dbGet(currentValues pathElement)
+                ;; dbGet takes one object, so resolve every current value separately.
+                currentValues = foreach(mapcar currentValue currentValues
+                    let((result)
+                        result = when(currentValue errset(dbGet(currentValue pathElement)))
+                        when(result car(result))
+                    )
+                )
             )
+        )
+
+        ;; Always release what the setup acquired (e.g. abeDone).
+        when(objects && cleanupExpression
+            errset(evalstring(cleanupExpression))
         )
 
         currentValues
@@ -261,53 +271,56 @@ procedure(ResolveAttributePath(objects attributePath)
 ;; - Buttons for updating, selecting, and deselecting objects.
 ;; - An options button for configuring visible columns.
 ;;
-;; The report field is initialized using SELECTION_TABLE_COLUMN_DEFINITIONS.
-procedure(CreateSelectionTableForm()
+;; The report field is initialized using stblColumnDefinitions.
+procedure(stblCreateSelectionTableForm()
     let((
-            	reportField
-            	refreshButton
-            	selectButton
-            	deSelectButton
-            	gridButtonForm
-            	gridSelectionTableForm
-            	autoRefreshToggle
-			    selectHeader
-                searchField
-                GetVisibleColumnDefinitions
-            	;;selectionTableForm
+            reportField
+            refreshButton
+            selectButton
+            deSelectButton
+            gridButtonForm
+            gridSelectionTableForm
+            autoRefreshToggle
+            optionsButton
+            searchField
+            gridSearchForm
+            visibleColumnDefinitions
+            ;;stblForm
         )
         
 
         ;; Create the column configuration dialog used by
         ;; the Options button.
-        CreateSelectHeaderWindowPopUp()
+        stblCreateSelectHeaderWindowPopUp()
         
         ;; Main report field displaying grouped selection data
-        visibleColumnDefinitions = GetVisibleColumnDefinitions(
-            selectHeaderWindowPopUp
+        visibleColumnDefinitions = stblGetVisibleColumnDefinitions(
+            stblOptionsForm
         )
 
         reportField = hiCreateReportField(
-		    ?name       'reportField
-		    ?headers    BuildTableColumnDefinitions(
+            ?name       'reportField
+            ?headers    stblBuildTableColumnDefinitions(
                             visibleColumnDefinitions 
                         ) 
-            ?choices    BuildTableSelectionSummary(
+            ?choices    stblBuildTableSelectionSummary(
                             visibleColumnDefinitions 
                         )
-		    ?selectMode	'extended
+            ?selectMode    'extended
             ?enableDeselectCB   t
-            ?callback   "ReportFieldCallBack()"
-	    )
+            ?callback   "stblReportFieldCallBack()"
+        )
         
         ;; Refresh report data from the current selection.
         refreshButton = hiCreateButton(
             ?name       'refreshButton
             ?buttonText "Refresh"
             ?enabled    nil
-            ?callback   "RefreshSelectionTableCallBack()"
+            ?callback   "stblRefreshSelectionTableCallBack()"
         )
 
+        ;; Auto-refresh toggle. Ticked: the poller keeps the table up to date and
+        ;; Refresh is disabled. Unticked: Refresh is enabled and used manually.
         autoRefreshToggle = hiCreateToggleField(
             ?name           'autoRefreshToggle
             ?choices        list(
@@ -315,37 +328,34 @@ procedure(CreateSelectionTableForm()
                             )
             ?defValue       list(t) 
             ?callback       list(
-                                "selectionTableForm~>refreshButton~>enabled = !car(selectionTableForm~>autoRefreshToggle~>value)"                                
+                                "stblForm~>refreshButton~>enabled = !car(stblForm~>autoRefreshToggle~>value)"                                
                             )
         )
 
         ;; Select objects corresponding to selected report rows.
         selectButton = hiCreateButton(
-            ?name    'selectbutton
+            ?name    'selectButton
             ?buttonText "select"
-            ?callback   "selectButtonCallBack()"
+            ?callback   "stblSelectButtonCallBack()"
         )
 
         ;; Remove objects corresponding to selected report rows from the current selection.
         deSelectButton = hiCreateButton(
             ?name    'deSelectButton
             ?buttonText "deSelect"
-            ?callback   "deSelectButtonCallBack()"
+            ?callback   "stblDeSelectButtonCallBack()"
         )
 
         ;; Open the column visibility configuration dialog.
-        selectHeader = hiCreateButton(
-            ?name    'selectHeader
+        optionsButton = hiCreateButton(
+            ?name    'optionsButton
             ?buttonText "Options"
-            ?callback   "hiDisplayForm('selectHeaderWindowPopUp -1:-1)"
+            ?callback   "hiDisplayForm('stblOptionsForm -1:-1)"
         )
 
-        ;; Close last docked window
-        foreach(winId hiGetWindowList('dockable)
-            when(winId~>hiForm == 'selectionTableForm
-                hiCloseWindow(winId) 
-            )
-        )
+        ;; Close the previously docked Selection table window(s)
+        stblCloseDockWindows()
+        ;; Layout: button grid, search row, then the table.
         gridButtonForm = hiCreateGridLayout(
             'gridButtonForm
             ?items      list(
@@ -353,20 +363,21 @@ procedure(CreateSelectionTableForm()
                             list(autoRefreshToggle 'row 0 'col 1) 
                             list(selectButton 'row 1 'col 0) 
                             list(deSelectButton 'row 1 'col 1) 
-                            list(selectHeader 'row 1 'col 2) 
+                            list(optionsButton 'row 1 'col 2) 
                         )
         )
 
+        ;; Search box, a regular expression matched against the attribute values.
         searchField = hiCreateStringField(
             ?name           `searchField
             ?prompt         "Search"
             ?defValue       ""
-            ?callback       "RefreshSelectionTableByKey()"
+            ?callback       "stblRefreshSelectionTableByKey()"
             ?editable t
         )
 
-        gidSearchForm   = hiCreateGridLayout(
-            'gidSearchForm
+        gridSearchForm = hiCreateGridLayout(
+            'gridSearchForm
             ?items      list(
                             list(searchField 'row 0 'col 0 'row_span -1)
                         )
@@ -379,24 +390,25 @@ procedure(CreateSelectionTableForm()
                         )
         )
 
-        selectionTableForm = hiCreateLayoutForm(
-            'selectionTableForm
+        stblForm = hiCreateLayoutForm(
+            'stblForm
             "Selection table"
             hiCreateVerticalBoxLayout(
                 'vbox
                 ?items list(
                     gridButtonForm
-                    gidSearchForm
+                    gridSearchForm
                     gridSelectionTableForm
                 )
             )
             ?minSize 600:200
         )
 
+        ;; Show the form in a dock window. stblShowDockWindow docks it afterwards.
         hiCreateDockWindow(
             ?appType        "layout"
             ?widgetType     "form"
-            ?form           selectionTableForm 
+            ?form           stblForm 
             ?scrollBar      t
             ?title          "Selection table"
             ?dockSizeHint   list(220 900)
@@ -405,92 +417,94 @@ procedure(CreateSelectionTableForm()
 )
 
 ;; Refresh the Selection Table using the currently visible columns.
-procedure(RefreshSelectionTableByOptions()
+;;
+;; The column count can change, so the report field is rebuilt with new
+;; headers and swapped into the form. Called when Options is applied.
+procedure(stblRefreshSelectionTableByOptions()
     let((
             visibleColumnDefinitions
             reportField
         )
 
-            visibleColumnDefinitions = GetVisibleColumnDefinitions(
-                selectHeaderWindowPopUp
+        when(stblForm && stblOptionsForm
+            visibleColumnDefinitions = stblGetVisibleColumnDefinitions(
+                stblOptionsForm
             )
             reportField = hiCreateReportField(
                 ?name       'reportField
-                ?headers    BuildTableColumnDefinitions(
+                ?headers    stblBuildTableColumnDefinitions(
                                 visibleColumnDefinitions
-                            ) 
-                ?choices    filterSummaryBySearch(
-                                BuildTableSelectionSummary(
+                            )
+                ?choices    stblFilterSummaryBySearch(
+                                stblBuildTableSelectionSummary(
                                     visibleColumnDefinitions
                                 )
                             )
-                ?selectMode	'extended
+                ?selectMode    'extended
                 ?enableDeselectCB   t
-                ?callback   "ReportFieldCallBack()"
+                ?callback   "stblReportFieldCallBack()"
             )
 
             hiDeleteField(
-                selectionTableForm 
+                stblForm
                 'reportField
             )
 
             hiAddField(
-                selectionTableForm 
+                stblForm
                 list(reportField 0:60 220:900 30)
             )
+        )
     )
 )
 
-;; Start a periodic refresh of the Selection Table.
+;; Refresh the table rows from the current selection, right away.
 ;;
-;; The table is refreshed only when the current selection
-;; differs from the previously cached selection.
-procedure(RefreshSelectionTableCallBack()
+;; Rebuilds the headers and the grouped rows for the visible columns and
+;; applies the Search filter. It does not check the auto-refresh toggle, the
+;; callers decide when to refresh. The poller (stblPollSelection) is what calls
+;; it automatically when the selection changes.
+procedure(stblRefreshSelectionTableData()
     let((visibleColumnDefinitions)
-        visibleColumnDefinitions = GetVisibleColumnDefinitions(
-            selectHeaderWindowPopUp
+        visibleColumnDefinitions = stblGetVisibleColumnDefinitions(
+            stblOptionsForm
         )
 
-        when(geIsValidHilightId(GLOBAL_HIGHLIGHT_SET)
-            geDeleteHilightSet(GLOBAL_HIGHLIGHT_SET)
-        )
-        visibleColumnDefinitions = GetVisibleColumnDefinitions(
-            selectHeaderWindowPopUp
-        )
-        selectionTableForm~>reportField~>headers = BuildTableColumnDefinitions(
+        stblForm~>reportField~>headers = stblBuildTableColumnDefinitions(
             visibleColumnDefinitions
         )
 
-        selectionTableForm~>reportField~>choices = filterSummaryBySearch(
-            BuildTableSelectionSummary(
+        stblForm~>reportField~>choices = stblFilterSummaryBySearch(
+            stblBuildTableSelectionSummary(
                 visibleColumnDefinitions
             )
         )
     )
 )
 
-procedure(RefreshSelectionTableByKey()
-    let((visibleColumnDefinitions)
-        visibleColumnDefinitions = GetVisibleColumnDefinitions(
-            selectHeaderWindowPopUp
-        )
+;; Delete only the highlight set created by this table.
+;; Other tools' highlight sets in the cellview are left untouched.
+procedure(stblClearHighlight()
+    when(geIsValidHilightId(stblHighlightSet)
+        geDeleteHilightSet(stblHighlightSet)
+    )
+    stblHighlightSet = nil
+)
 
-        when(geIsValidHilightId(GLOBAL_HIGHLIGHT_SET)
-            geDeleteHilightSet(GLOBAL_HIGHLIGHT_SET)
-        )
-        if(selectionTableForm~>autoRefreshToggle~>autoRefresh~>value then
-            visibleColumnDefinitions = GetVisibleColumnDefinitions(
-                selectHeaderWindowPopUp
-            )
-            selectionTableForm~>reportField~>headers = BuildTableColumnDefinitions(
-                visibleColumnDefinitions
-            )
+;; Refresh button callback, also used after select and deSelect.
+;; Refreshes unconditionally, whatever the auto-refresh toggle says.
+procedure(stblRefreshSelectionTableCallBack()
+    stblClearHighlight()
+    stblRefreshSelectionTableData()
+)
 
-            selectionTableForm~>reportField~>choices = filterSummaryBySearch(
-                BuildTableSelectionSummary(
-                    visibleColumnDefinitions
-                )
-            )
+;; Refresh used for automatic updates (poller, Search field).
+;; Does nothing without a window or form, or when auto-refresh is unticked.
+procedure(stblRefreshSelectionTableByKey()
+    when(getCurrentWindow() && boundp('stblForm) && stblForm
+        stblClearHighlight()
+        when(stblForm~>autoRefreshToggle~>autoRefresh~>value
+            stblRefreshSelectionTableData()
         )
     )
 )
@@ -502,7 +516,7 @@ procedure(RefreshSelectionTableByKey()
 ;; - One toggle for each configured table column.
 ;;
 ;; All toggle items are enabled by default.
-procedure(CreateSelectHeaderWindowPopUp()
+procedure(stblCreateSelectHeaderWindowPopUp()
     let((
             toggleField
             defaultToggleValues
@@ -511,37 +525,37 @@ procedure(CreateSelectHeaderWindowPopUp()
         ;; One default value is required for each toggle item,
         ;; including the "Select All" option.
         defaultToggleValues = list()
-        if(boundp('selectHeaderWindowPopUp) then
-            defaultToggleValues = selectHeaderWindowPopUp~>toggleField~>value
+        if(stblOptionsForm then
+            defaultToggleValues = stblOptionsForm~>toggleField~>value
         else 
-            for(i 0 length(SELECTION_TABLE_COLUMN_DEFINITIONS)
+            for(i 0 length(stblColumnDefinitions)
                 defaultToggleValues = append1(defaultToggleValues  t)
             )
         )
 
         toggleField = hiCreateToggleField( 
             ?name           'toggleField
-            ?choices        BuildColumnToggleItems(
-                                SELECTION_TABLE_COLUMN_DEFINITIONS
+            ?choices        stblBuildColumnToggleItems(
+                                stblColumnDefinitions
                             )
             ?itemsPerRow    1
             ?defValue       defaultToggleValues 
             ?callback       list(
-                                "ToggleAllColumnSelections(hiGetCurrentForm())" 
+                                "stblToggleAllColumnSelections(hiGetCurrentForm())" 
                                 ""
                             )
         )
 
-        selectHeaderWindowPopUp = hiCreateAppForm(
-            ?name	        'selectHeaderWindowPopUp
+        stblOptionsForm = hiCreateAppForm(
+            ?name            'stblOptionsForm
             ?formTitle      "Options"
-            ?fields	        list(toggleField)
+            ?fields            list(toggleField)
             ?buttonLayout   'OKCancel
-            ?callback       "geDeleteAllHilightSet(geGetWindowCellView()) RefreshSelectionTableByOptions()"
+            ?callback       "stblClearHighlight() stblRefreshSelectionTableByOptions()"
         )
 
         hiSetFormSize(
-            selectHeaderWindowPopUp
+            stblOptionsForm
             30:300 
             t
         )
@@ -550,153 +564,154 @@ procedure(CreateSelectHeaderWindowPopUp()
 
 ;; Return the column definitions selected in the Options dialog.
 ;;
-;; The first toggle item ("Select All") is ignored.
-procedure(GetVisibleColumnDefinitions(form)
+;; The toggle values are aligned with the toggle items built by
+;; stblBuildColumnToggleItems: "Select All" first, then one value per entry of
+;; stblColumnDefinitions in the same order. The first value is skipped.
+procedure(stblGetVisibleColumnDefinitions(form)
     let((
-            selectedColumnNames
-            visibleColumnDefinitions
+            toggleValues
+            visibleColumns
         )
-
-        selectedColumnNames = list()
 
         ;; Skip the first toggle item ("Select All")
-        for(index 1 length(form~>toggleField~>value) - 1
-            when(nth(index form~>toggleField~>value)
-                selectedColumnNames = append1(
-                    selectedColumnNames
-                    symbolToString(
-                        nth(index form~>toggleField~>_toggleItems)
-                    )
-                )
+        toggleValues = cdr(form~>toggleField~>value)
+
+        visibleColumns = nil
+        foreach(columnDefinition stblColumnDefinitions
+            when(car(toggleValues)
+                visibleColumns = cons(columnDefinition visibleColumns)
             )
+            toggleValues = cdr(toggleValues)
         )
 
-        visibleColumnDefinitions = list()
-
-        foreach(columnDefinition  SELECTION_TABLE_COLUMN_DEFINITIONS 
-            when(member(
-                    car(columnDefinition) 
-                    selectedColumnNames
-                )
-                visibleColumnDefinitions = append1(visibleColumnDefinitions columnDefinition)
-            )
-        ) 
-
-        visibleColumnDefinitions
+        reverse(visibleColumns)
     )
 )
 
 
 ;; Toggle all column selections based on the state of the
 ;; "Select All" checkbox.
-procedure(ToggleAllColumnSelections(form)
-    let((valueSet toggleValue)
-        toggleValue = car(form->toggleField->value)
+procedure(stblToggleAllColumnSelections(form)
+    let((toggleValue)
+        toggleValue = car(form~>toggleField~>value)
 
-        valueSet = list()
-
-        for(index 0 length(form~>toggleField~>value) - 1
-            valueSet = append1(valueSet toggleValue)
-        )
-
-        form~>toggleField~>value = valueSet
-    )
-)
-
-procedure(ReportFieldCallBack()
-    let((selectedRow idSelects)
-        when(geIsValidHilightId(GLOBAL_HIGHLIGHT_SET)
-            geDeleteHilightSet(GLOBAL_HIGHLIGHT_SET)
-        )
-        ;; ;; GLOBAL_HIGHLIGHT_SET = geCreateHilightSet(geGetWindowCellView() list("hilite" "drawing1") nil)
-        GLOBAL_HIGHLIGHT_SET = geCreateHilightSet(geGetWindowCellView() list("y4" "drawing") nil)
-        geSetHilightSetHaloParameters(GLOBAL_HIGHLIGHT_SET "over" "fadeout" "normal" 50 nil )
-        GLOBAL_HIGHLIGHT_SET->enable = t
-        foreach(selectedRow  hiReportGetSelectedItems(selectionTableForm~>reportField)
-            idSelects = append(
-                idSelects
-                car(nth(selectedRow selectionTableForm~>reportField~>choices))
-            )
-        )
-        foreach(idSelect idSelects
-            geAddHilightFig(GLOBAL_HIGHLIGHT_SET idSelect t)
+        form~>toggleField~>value = mapcar(
+            lambda((oldValue) toggleValue)
+            form~>toggleField~>value
         )
     )
 )
 
-procedure(selectButtonCallBack()
-    let((selectedRow selectedRows index idSelects idSelect)
-        idSelects = list()
-        selectedRows = list()
-        foreach(selectedRow  hiReportGetSelectedItems(selectionTableForm~>reportField)
-            idSelects = append(
-                idSelects
-                car(nth(selectedRow selectionTableForm~>reportField~>choices))
+;; Return the object ids of every selected row in the report field.
+procedure(stblGetSelectedRowIds()
+    let((choices ids)
+        choices = stblForm~>reportField~>choices
+        ids = nil
+        ;; cons + reverse keeps this linear in the number of ids
+        foreach(selectedRow hiReportGetSelectedItems(stblForm~>reportField)
+            foreach(id car(nth(selectedRow choices))
+                ids = cons(id ids)
             )
         )
-
-        foreach(item geGetSelectedSet()
-            when(!member(item idSelects)
-                geDeselectObject(item) 
-            )
-        )
-
-        when(geIsValidHilightId(GLOBAL_HIGHLIGHT_SET)
-            geDeleteHilightSet(GLOBAL_HIGHLIGHT_SET)
-        )
-
-        RefreshSelectionTableByKey()
+        reverse(ids)
     )
 )
 
-procedure(deSelectButtonCallBack()
-    let((idSelects)
-        idSelects = list()
-        foreach(selectedRow  hiReportGetSelectedItems(selectionTableForm~>reportField)
-            idSelects = append(
-                idSelects
-                car(nth(selectedRow selectionTableForm~>reportField~>choices))
+;; Row click callback: highlight the objects of the selected rows.
+;; A missing highlight layer only produces a warning.
+procedure(stblReportFieldCallBack()
+    let((idSelects result)
+        stblClearHighlight()
+
+        ;; The highlight layer may not exist in the tech file, so do not let
+        ;; a missing layer-purpose pair raise an error on every row click.
+        result = errset(
+            geCreateHilightSet(geGetWindowCellView() stblHighlightLayer nil)
+        )
+        if(result && car(result) then
+            stblHighlightSet = car(result)
+            geSetHilightSetHaloParameters(stblHighlightSet "over" "fadeout" "normal" 50 nil )
+            stblHighlightSet->enable = t
+            idSelects = stblGetSelectedRowIds()
+            foreach(idSelect idSelects
+                geAddHilightFig(stblHighlightSet idSelect t)
             )
-        )
-
-        foreach(idSelect idSelects
-            geDeselectFig(idSelect) 
-        )
-
-        when(geIsValidHilightId(GLOBAL_HIGHLIGHT_SET)
-            geDeleteHilightSet(GLOBAL_HIGHLIGHT_SET)
-        )
-
-        RefreshSelectionTableByKey()
-    )
-)
-
-procedure(filterSummaryBySearch(tableSelectionSummaries)
-    let((newTableSelectionSummaries searchValue found stringItem)
-        newTableSelectionSummaries = list()
-        searchValue = selectionTableForm~>searchField~>value
-        if(searchValue == "" then 
-            newTableSelectionSummaries = tableSelectionSummaries
         else
-            foreach(tableSelectionSummary tableSelectionSummaries
-                found = nil
-                foreach(item tableSelectionSummary
-                    stringItem = sprintf(nil "%L" item)
-                    ;; when(rexMatchp(searchValue stringItem)
-                    when(pcreMatchp(searchValue stringItem)
-                        found = t
-                    )
-                )
-                when(found
-                    newTableSelectionSummaries = append1(newTableSelectionSummaries tableSelectionSummary)
-                )
-            )
+            warn("Selection table: cannot highlight on layer %L, check stblHighlightLayer.\n" stblHighlightLayer)
         )
-        newTableSelectionSummaries
     )
 )
 
-procedure(GetDockWindowByName(winName)
+;; Keep only the objects in keepIds selected.
+;;
+;; Every currently selected object that is not in keepIds is deselected.
+;; Objects in keepIds that are not selected are NOT added, so keepIds is
+;; expected to be a subset of the current selection (as table rows always are).
+;; Only the objects that must go are touched.
+procedure(stblApplySelectionSet(newIds)
+    let((oldSelected keepSet)
+        oldSelected = geGetSelectedSet()
+        keepSet = makeTable("keepSet" nil)
+        foreach(id newIds keepSet[id] = t)
+        ;; Deselect only what must go (single pass, table lookup)
+        foreach(item oldSelected
+            unless(keepSet[item] geDeselectFig(item))
+        )
+    )
+)
+
+;; "select" button callback: keep only the objects of the picked rows selected.
+procedure(stblSelectButtonCallBack()
+    stblApplySelectionSet(stblGetSelectedRowIds())
+    ;; Refresh even with auto-refresh off, the table rows are stale otherwise
+    stblRefreshSelectionTableCallBack()
+)
+
+;; "deSelect" button callback: remove the objects of the picked rows from the
+;; selection and keep the rest selected.
+procedure(stblDeSelectButtonCallBack()
+    let((dropSet remaining)
+        dropSet = makeTable("dropSet" nil)
+        foreach(id stblGetSelectedRowIds() dropSet[id] = t)
+        remaining = setof(item geGetSelectedSet() !dropSet[item])
+        stblApplySelectionSet(remaining)
+        stblRefreshSelectionTableCallBack()
+    )
+)
+
+;; Filter summary rows by the Search field (regular expression).
+;;
+;; Only the attribute values of a row are searched. The leading object ids
+;; and the trailing occurrence count are skipped. An invalid regular
+;; expression leaves the rows unfiltered.
+procedure(stblFilterSummaryBySearch(tableSelectionSummaries)
+    let((searchValue)
+        searchValue = stblForm~>searchField~>value
+        if(searchValue == "" || !errset(pcreMatchp(searchValue "")) then
+            tableSelectionSummaries
+        else
+            setof(tableSelectionSummary tableSelectionSummaries
+                exists(item reverse(cdr(reverse(cdr(tableSelectionSummary))))
+                    pcreMatchp(searchValue sprintf(nil "%L" item))
+                )
+            )
+        )
+    )
+)
+
+;; Close every docked "Selection table" window.
+;; Windows are matched by title, the form name can not be compared directly.
+procedure(stblCloseDockWindows()
+    foreach(dockWindow hiGetWindowList('dockable)
+        when(hiGetWindowName(dockWindow) == "Selection table"
+            errset(hiCloseWindow(dockWindow))
+        )
+    )
+    t
+)
+
+;; Return the first docked window titled winName, or nil.
+procedure(stblGetDockWindowByName(winName)
     prog((winId)
         winId = nil
         foreach(winId hiGetWindowList('dockable)
@@ -707,39 +722,82 @@ procedure(GetDockWindowByName(winName)
     )
 )
 
-procedure(showDockWindow()
-    let((winId)
-        winId = GetDockWindowByName("Selection table") 
-        unless(winId && hiGetSessionWindow(getCurrentWindow()) == hiGetSessionWindow(winId)
-            CreateSelectionTableForm()
-        )
-        winId = GetDockWindowByName("Selection table")
-        hiDockWindow(
-            ?window winId 
-            ?session when(
-                        getCurrentWindow() != nil hiGetSessionWindow(getCurrentWindow())
-                    ) 
-            ?side 'right
+;; Create the table if needed and dock it on the right of the current window.
+;; Needs an open window; without one it only prints a warning.
+procedure(stblShowDockWindow()
+    let((winId currentWin)
+        currentWin = getCurrentWindow()
+        ;; Docking needs a layout session; without an open window do nothing
+        ;; (Ctrl Shift Q can be used again once a cellview is open).
+        if(!currentWin then
+            warn("Selection table: open a cellview first, then press Ctrl Shift Q.")
+        else
+            winId = stblGetDockWindowByName("Selection table")
+            unless(winId && stblForm && stblOptionsForm && hiGetSessionWindow(currentWin) == hiGetSessionWindow(winId)
+                stblCreateSelectionTableForm()
+            )
+            winId = stblGetDockWindowByName("Selection table")
+            when(winId
+                hiDockWindow(
+                    ?window winId
+                    ?session hiGetSessionWindow(currentWin)
+                    ?side 'right
+                )
+                stblStartSelectionPolling()
+            )
         )
     )
 )
 
 
-CreateSelectionTableForm()
-showDockWindow()
+;; Selection polling
+;;
+;; The table follows the selection by polling instead of rebinding mouse and
+;; keyboard events, so no default Layout bindkey is overwritten and every way
+;; of changing the selection (box select, Select All, delete, other scripts...)
+;; is covered.
+;;
+;; Each start gets a new token. A timer left over from a previous load carries
+;; an old token, so it stops itself instead of running alongside the new one.
+unless(boundp('stblPollToken) && numberp(stblPollToken)
+    stblPollToken = 0
+)
+stblLastSelection = nil
 
-hiSetBindKey("Layout" "None<Btn1Down>"   "mouseSingleSelectPt() RefreshSelectionTableByKey()")
-hiSetBindKey("Layout" "Shift<Btn1Down>"  "mouseAddSelectPt() RefreshSelectionTableByKey()")
-hiSetBindKey("Layout" "Ctrl<Btn1Down>"   "mouseSubSelectPt() RefreshSelectionTableByKey()")
+;; Poll interval in tenths of a second.
+stblPollDelay = 5
 
-hiSetBindKeys( "Layout" list(
-    list("<DrawThru1>"  "leSelBoxOrStretch() RefreshSelectionTableByKey()"  "geSingleSelectBox() RefreshSelectionTableByKey()")
-    list("Shift<DrawThru1>"  "geAddSelectBox() RefreshSelectionTableByKey()"  "geAddSelectBox() RefreshSelectionTableByKey()")
-    list("Ctrl<DrawThru1>"  "geSubSelectBox() RefreshSelectionTableByKey()"  "geSubSelectBox() RefreshSelectionTableByKey()")
-)) 
+;; Start (or restart) the poller, which invalidates any earlier timer.
+procedure(stblStartSelectionPolling()
+    stblPollToken = stblPollToken + 1
+    stblLastSelection = nil
+    hiRegTimer(sprintf(nil "stblPollSelection(%d)" stblPollToken) stblPollDelay)
+)
 
-hiSetBindKey("Layout" "Ctrl<key>A"      "geSelectAllFig() RefreshSelectionTableByKey()")
-hiSetBindKey("Layout" "Ctrl<key>D"      "geDeselectAllFig() RefreshSelectionTableByKey()")
-hiSetBindKey("Layout" "<key>Delete"     "leHiDelete() RefreshSelectionTableByKey()")
+;; Timer callback: refresh the table when the selection changed, then re-arm.
+;; A token that is no longer current means a newer load took over, stop then.
+procedure(stblPollSelection(token)
+    let((currentSelection)
+        when(token == stblPollToken
+            ;; Re-arm first so an error below can not stop the polling.
+            hiRegTimer(sprintf(nil "stblPollSelection(%d)" token) stblPollDelay)
 
-hiSetBindKey("Layout" "Ctrl Shift<key> Q" "showDockWindow()")
+            when(getCurrentWindow() && stblForm
+                currentSelection = geGetSelectedSet()
+                unless(equal(currentSelection stblLastSelection)
+                    ;; Record first so a failing refresh is not retried every tick.
+                    stblLastSelection = currentSelection
+                    errset(stblRefreshSelectionTableByKey())
+                )
+            )
+        )
+    )
+)
+
+;; Reloading resets stblOptionsForm (above), so close any dock window left over
+;; from the previous load and rebuild the form and the Options popup.
+stblCloseDockWindows()
+stblForm = nil
+stblShowDockWindow()
+
+hiSetBindKey("Layout" "Ctrl Shift<key> Q" "stblShowDockWindow()")
